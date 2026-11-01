@@ -1,0 +1,18 @@
+# 构建中间产物
+*.o
+*.obj
+
+# 本地替换/编辑备份
+*.exe.old
+*.old
+
+# 测试运行产物（截图/状态文件）
+shots/
+out/
+child_exit_*.txt
+automation_info.json
+last_selfshot.txt
+
+# 系统杂项
+Thumbs.db
+Desktop.ini
