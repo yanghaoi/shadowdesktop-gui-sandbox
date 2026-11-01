@@ -53,7 +53,16 @@ GitHub: **https://github.com/yanghaoi/shadowdesktop-gui-sandbox**
 
 ## 快速开始
 
-预编译 exe 在 `bin/`（静态链接，无运行时依赖），clone 即用：
+预编译 exe 在 `bin/`（静态链接，无运行时依赖），两种取用方式：
+
+**方式一：下载完整包（给 agent 装技能用，推荐）**
+
+从 [Releases](https://github.com/yanghaoi/shadowdesktop-gui-sandbox/releases/latest) 下载
+`shadowdesktop-gui-sandbox-v1.0.0.zip`，解压出的 `shadowdesktop-gui-sandbox/` 目录
+直接就是一个可用的技能目录（含 `SKILL.md` + `bin/` + `src/`），丢进 agent 的技能
+目录即可，无需 git 与编译环境。
+
+**方式二：clone 仓库**
 
 ```bash
 git clone https://github.com/yanghaoi/shadowdesktop-gui-sandbox.git
