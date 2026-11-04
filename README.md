@@ -31,6 +31,8 @@ GitHub: **https://github.com/yanghaoi/shadowdesktop-gui-sandbox**
   tree/click/find/get/set/wait 等命令，断言走返回值，截图只作最终视觉验收
 - **自研 GUI 低成本接入**：include `automation.h` + 3 行代码即可获得全套自动化接口，
   兼容 MinGW 与 MSVC/MFC 工程
+- **Chromium 程序 CDP 驱动**：`cdpcli.mjs` 走 DevTools 协议语义化驱动 Edge 等
+  完整 Chromium 程序（沙箱内验证通过），真实输入管线点击、不抢焦点、无窗口也能截图
 - **零窗口执行器** `runhidden.exe`：隐藏运行 PowerShell/任意命令行（含提权），退出码透传
 - **零依赖、拷走即用**：全部 exe 静态链接（MinGW-w64 编译），PNG 编码用系统 GDI+
 
@@ -42,6 +44,7 @@ GitHub: **https://github.com/yanghaoi/shadowdesktop-gui-sandbox**
 | `bin/runhidden.exe` | 零窗口执行器：CREATE_NO_WINDOW/SW_HIDE 隐藏运行并等待，透传退出码；`-e` 提权（runas） |
 | `bin/sample_gui.exe` | 被测 GUI 样本：窗口+时钟、自截图、**内嵌自动化管道服务** |
 | `bin/autocli.exe` | 自动化接口客户端：tree/get/set/invoke/wait/shot，纯命令行语义驱动 |
+| `bin/cdpcli.mjs` | WebView2/Chromium **CDP 驱动客户端**（Node>=22 零依赖）：eval/click/input/rawclick/send/wait/shot，配合 Edge 等完整 Chromium 程序的沙箱驱动 |
 | `src/desktopctl.cpp` | desktopctl 源码 |
 | `src/autocli.cpp` | autocli 源码 |
 | `src/sample_gui.cpp` | sample_gui 源码（自动化接入范本） |
@@ -49,6 +52,7 @@ GitHub: **https://github.com/yanghaoi/shadowdesktop-gui-sandbox**
 | `src/automation.h` | 内嵌自动化服务模块（命名管道 + 行协议 + JSON 响应），include 即用 |
 | `src/gdi_capture.h` | 共享截图模块（BitBlt 整屏 + PrintWindow/WM_PRINT 逐窗口合成 → PNG） |
 | `src/cloak_test.cpp` | 截图路径定向实验程序（2026-10-06 验证 PrintWindow 对 cloak/GPU 窗口可靠性） |
+| `src/wv2sandbox_test.cpp` | WebView2 × 沙箱/CDP 兼容性探针（8 形态矩阵复验工具，见「WebView2 × 沙箱/CDP」节） |
 | `SKILL.md` | AI agent 技能（skill）版使用说明，供装入 agent 的技能目录 |
 
 ## 快速开始
@@ -252,6 +256,81 @@ wait/sleep + 内置 get title|pid|desktop —— MFC 程序常用控件不必再
 - 管道服务为**多实例**（每连接一个线程），一条长 wait 不阻塞其他命令。
 - 截图降级为最终视觉验收；平时断言全部走 `get`/`wait` 的返回值。
 
+## WebView2 应用 × 沙箱/CDP：现状边界与路线（2026-11-05 实测判决）
+
+被测程序 UI 在 WebView2 里（如 musicdl）时，沙箱和 CDP 两条路各有硬边界。
+以下全部为本机（win10 19045, WebView2 Runtime **155.0.4283.62**）实测结论，
+工具 `src/wv2sandbox_test.cpp` 可在 runtime 升级后一键复验。
+
+### 判决表（三条硬边界）
+
+| # | 结论 | 根因/证据 |
+|---|---|---|
+| 1 | **WebView2 宿主进 CreateDesktop 沙箱 = 浏览器进程僵死**（Win32 主窗口正常、UDF 能建、完成回调永不触发、窗口黑屏） | 上游已知问题 [WebView2Feedback#960](https://github.com/MicrosoftEdge/WebView2Feedback/issues/960)（custom desktop, 官方 priority-low 不修）。对照：**同版本完整 Edge 在沙箱完全正常**（渲染+CDP 全通过）、notepad 正常。注入 hook 改 CreateProcessW 的 lpDesktop 也无效——浏览器进程能在 Default 桌面起来，但跨桌面 controller 创建必失败（hr=0x80040205，Windows 窗口父子跨桌面拒绝） |
+| 2 | **Runtime 150+ 回归：`--remote-debugging-port` 失效**（env var 机制本身正常——同批参数 `--enable-logging=file` 会生效） | [WebView2Feedback#5645](https://github.com/MicrosoftEdge/WebView2Feedback/issues/5645)（官方标 `regression`：149.0.4022.98 正常、150.0.4078.665 起 /json/version 无响应；Edge 同版本不受影响）。本机 155 全形态复现 |
+| 3 | **Runtime 150+ 行为变化：宿主窗口非"正常显示"时浏览器进程握手后 ~100ms 自退**。探针 8 形态矩阵全灭：SW_HIDE / 屏外(-32000) / 最小化 / 1x1 工具窗贴角 / 1x1+激活 / 显示3s后隐藏 / DWM cloak / controller IsVisible(FALSE) | Chromium 日志铁证：`AddKeepAlive(kBrowserWindow)` → 96ms → `RemoveKeepAlive` → `keep_alives=[]` → `Dispatcher::Shutdown()`。对照：窗口正常显示的宿主（wetype、musicdl 日常）长活；#5645 报告 149 上 Playwright connectOverCDP 正常 → 149 无此行为 |
+
+推论：runtime 150+ 上，WebView2 宿主**只能以"窗口正常显示在屏内"运行**；
+外部 CDP 驱动不可用（#5645）；沙箱不可用（#960）。
+
+### 可用配方（现状）
+
+1. **musicdl 已接入 automation.h（2026-11-05 验收通过）——自研 WebView2 程序的标准姿势**：
+   `webview2-demo.exe --automation --out <dir>` 启动（窗口正常显示），宿主新增
+   `js <expr>`（ExecuteScript 桥，含 `wvnav`/`wvstate` 就绪态与错误路径）与
+   `shot <file>`（CapturePreview）业务命令。测试会话标准流程：
+
+   ```bash
+   SD=/c/Users/Administrator/.zcode/skills/shadowdesktop-gui-sandbox
+   # 独立路径副本启动（避开单实例路径键；窗口在用户桌面正常显示）
+   C:/temp/autotest/webview2-demo.exe --automation --out C:/temp/autotest
+   PIPE=$(python -c "import json;print(json.load(open(r'C:/temp/autotest/automation_info.json'))['pipe'])")
+   $SD/bin/autocli.exe $PIPE wait wvnav eq 1 20000       # 等 WebView2 导航完成
+   $SD/bin/autocli.exe $PIPE js "document.title"         # DOM 断言 → "musicdl 本地播放器"
+   $SD/bin/autocli.exe $PIPE js "document.getElementById('searchGo').click()"
+   $SD/bin/autocli.exe $PIPE js "send({type:'volume',value:0.42}); 'sent'"  # app 级动作走页面 send() 桥
+   $SD/bin/autocli.exe $PIPE shot C:/temp/autotest/ui.png                   # 内容截图
+   $SD/bin/autocli.exe $PIPE invoke quit
+   ```
+
+   其余自研 WebView2 程序照此接入（三步见「内嵌自动化接口」节 + 本节判决约束）。
+2. **沙箱只承载非 WebView2 部分**：tray/对话框等 Win32 外壳用 autocli 消息注入
+   在沙箱内驱动；HTML 层面进不了沙箱。
+3. **完整 Chromium 程序（Edge 等）不受上述任何限制**：沙箱 + CDP 端到端全通过
+   （配方：`--remote-debugging-port=<port> --remote-allow-origins=*` +
+   `bin/cdpcli.mjs`，loopback 不受桌面隔离影响）。
+
+### 候选修复路线（待执行验证）
+
+- **Fixed Version runtime 149**（#5645 报告者的 workaround）：下载
+  [WebView2 Fixed Version](https://developer.microsoft.com/en-us/microsoft-edge/webview2/)
+  x64 包解压后，用 `WEBVIEW2_BROWSER_EXECUTABLE_FOLDER` env var 指向它。
+  149 尊重 `--remote-debugging-port`，且 149 上 Playwright 正常 → 预期"浏览器自退"
+  也不存在 → **隐藏窗 + CDP 配方可能在 149 上成立**（待实测）。
+- 等 runtime 更新修复 #5645（issue 已 closed；本机 155 仍坏，升级后跑
+  `wv2sandbox_test` 复验）。
+
+### 探针复验工具（src/wv2sandbox_test.cpp）
+
+```bash
+# 构建 (winlibs mingw64; 需 WebView2 SDK 头 + 同目录 runtime\WebView2Loader.dll)
+g++ -std=c++17 -O2 -municode -mwindows -DNOMINMAX -DUNICODE -D_UNICODE \
+    -D_WIN32_WINNT=0x0A00 -I<SDK>/build/native/include wv2sandbox_test.cpp \
+    -o wv2sandbox_test.exe -lgdi32 -luser32 -lole32 -loleaut32 -luuid -ldwmapi -static
+
+# 沙箱内复验 #960（判据看 desktopctl shot 的窗口标题或 exe 同目录 probe_state.txt）
+bin/desktopctl.exe launch ZCode-probe <dir>/wv2sandbox_test.exe
+bin/desktopctl.exe ps ZCode-probe        # READY=已修复 / FAIL hr=..where=.. / STUCK=仍僵死
+bin/desktopctl.exe kill ZCode-probe
+
+# 复验 #5645（Default 桌面, 正常显示, 看 CDP 端口是否绑定）
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=19439 --remote-allow-origins=*" \
+    <dir>/wv2sandbox_test.exe
+curl -s http://127.0.0.1:19439/json/version
+# 模式参数: dual(等价注入改lpDesktop的终态, 预期 FAIL where=21) / offscreen / min /
+#           tiny / tinyact / flashhide / cloak / novis —— 8 形态矩阵见判决表#3
+```
+
 ## 构建源码（mingw-w64 g++，静态链接，无运行时依赖）
 
 需要 MinGW-w64（如 [niXman/mingw-builds](https://github.com/niXman/mingw-builds-binaries)
@@ -293,6 +372,8 @@ g++ -O2 -municode -mwindows src/runhidden.cpp -o bin/runhidden.exe -lshell32 -lu
 
 - 沙箱 GUI **收不到** SendInput 键鼠（这是隔离的目的）；驱动用 autocli 消息注入或
   automation.h 接口。
+- **WebView2 宿主程序进不了沙箱、外部 CDP 也失效**（runtime 150+ 回归）——详见
+  「WebView2 应用 × 沙箱/CDP」节；Chromium 完整浏览器（Edge）不受影响。
 - UIA / WinAppDriver / pyautogui **跨不了桌面**，不要往这个方向试。
 - RDP 断连场景下显示管线失效，PW/BitBlt/flash 全部不可用——需注入式截图后端
   （DLL 注入目标进程做进程内 BitBlt；**未随本仓库分发**，需要时可按参考资料自建）。

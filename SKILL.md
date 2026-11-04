@@ -8,7 +8,9 @@ description: |
   与断言)。当用户要求测试/运行任何会弹窗口的 GUI 程序、做 GUI 自动化验证、
   截图验证桌面程序界面、抱怨测试窗口干扰正常操作、或要开 PowerShell 执行
   会弹控制台窗口的脚本时使用(全局约定: 此类执行一律进沙箱桌面)。
-  自研 GUI 还可通过 automation.h 以 3 行代码接入自动化接口。
+  自研 GUI 还可通过 automation.h 以 3 行代码接入自动化接口;
+  WebView2/Chromium(Edge) 程序用 cdpcli.mjs 走 CDP 驱动(含沙箱内 Edge、
+  WebView2 边界判决见文内)。
 ---
 
 # ShadowDesktop 沙箱桌面 GUI 测试
@@ -20,6 +22,7 @@ SD="$HOME/.zcode/skills/shadowdesktop-gui-sandbox"   # 实际以安装位置为�
 $SD/bin/desktopctl.exe   # 生命周期: launch/shot/kill/run/enum/switch/ps/waitwin
 $SD/bin/sample_gui.exe   # 参考测试样本(自截图+自动化接口)
 $SD/bin/autocli.exe      # 自动化客户端: tree/get/set/invoke/click/find/ctrl/ctrls/key/wait/gettext/combo/check
+$SD/bin/cdpcli.mjs       # CDP 驱动客户端(Node>=22): Edge 等完整 Chromium 程序的沙箱驱动
 $SD/bin/runhidden.exe    # 零窗口执行器: 隐藏运行 powershell/任意命令, 透传退出码; -e 提权
 ```
 
@@ -128,9 +131,36 @@ $RH -e powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "
 - 测试程序退出 + keeper 释放句柄后, 桌面对象**自动销毁**——之后再 ps/shot 会报
   err=2 "打不开桌面", 属正常, 不是故障。
 - UIA/WinAppDriver/pyautogui **跨不了桌面**, 不要往这个方向试。
+- **WebView2 宿主程序（如 musicdl）进沙箱 = 浏览器进程僵死**（黑屏、回调不触发）,
+  上游 #960 不修——详见下节「WebView2 应用测试」。同版本**完整 Edge 进沙箱完全正常**。
 - RDP 断连场景 PW/BitBlt/flash 全失效, 需注入式截图（shotagent/ 未随本包分发, 需要时按 README 参考资料自建）。
 - 本机验证记录: 2026-10-31, win10 19045, notepad 沙箱截图(1920x1080 PrintWindow 合成)与
   PowerShell 沙箱执行(输出落盘)均通过; exe 静态链接, 直接可用。
+
+## WebView2 应用测试（2026-11-05 判决, runtime 155; 详见 README「WebView2 × 沙箱/CDP」节）
+
+三个硬边界（`src/wv2sandbox_test.cpp` 可复验, runtime 升级后重跑一遍）:
+1. **沙箱**: WebView2 宿主进 CreateDesktop 桌面 → 浏览器僵死(#960), 注入改 lpDesktop
+   也救不了（跨桌面 controller 创建 hr=0x80040205）;
+2. **CDP**: runtime 150+ 回归(#5645), `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=…`
+   **不生效**（env var 机制正常, 同批 --enable-logging 生效）; 149 正常;
+3. **不可见形态全灭**: SW_HIDE/屏外/最小化/1x1/cloak/controller 不可见 → 浏览器进程
+   握手后 ~100ms 自退（keep-alive 日志铁证）→ 宿主窗口必须正常显示。
+
+可用配方:
+- **musicdl 已接入（2026-11-05 验收通过）**: `<副本>/webview2-demo.exe --automation
+  --out <dir>` 启动（窗口正常显示, 用独立路径副本避开单实例）→ autocli
+  `wait wvnav eq 1` / `js "<expr>"`（DOM 断言/点击/输入/`send({type:...})` app 级动作）
+  / `shot <file>`。其它自研 WebView2 程序照 automation.h 三步接入（README 有判决约束）。
+- **沙箱里只驱动 Win32 外壳**（tray/对话框, autocli 消息注入）。
+- **完整 Chromium 程序（Edge 等）**: 沙箱 + CDP 全通——
+  ```bash
+  export WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=19437 --remote-allow-origins=*"
+  $SD/bin/desktopctl.exe launch ZCode-<id> "…msedge.exe" --user-data-dir=<临时目录> --no-first-run <url>
+  node $SD/bin/cdpcli.mjs --wait 30 19437 eval "document.title"
+  node $SD/bin/cdpcli.mjs 19437 click "#btn"      # rawclick=真实输入管线, 不用 SendInput
+  node $SD/bin/cdpcli.mjs 19437 shot out.png      # CDP 截图(隐藏窗也能截)
+  ```
 
 ## 自研程序接入自动化接口（AutoCommonDispatch 范式）
 
